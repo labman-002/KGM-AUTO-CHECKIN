@@ -3,9 +3,27 @@
  * 提供登录脚本共享的用户信息更新与保存逻辑
  */
 
+import fs from 'node:fs'
+import path from 'node:path'
 import { printBlue, printGreen, printRed, printYellow } from './colorOut.js'
 import { hasSecretWriteToken, setRepoSecret } from './githubSecrets.js'
 import { maskIdentifier, sanitizeForLog, shouldPrintSensitiveValue } from './safeLog.js'
+
+/**
+ * 解析 USERINFO JSON 文本。
+ * 兼容 UTF-8 BOM（Windows 记事本保存的文件自带 BOM，会导致 JSON.parse 直接失败）与首尾空白。
+ * @param {string} text
+ * @returns {Array|null} 解析成功返回数组；为空/格式错误/非数组时返回 null
+ */
+function parseUserinfoJson(text) {
+  if (!text) return null
+  try {
+    const parsed = JSON.parse(String(text).replace(/^\uFEFF/, '').trim())
+    return Array.isArray(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
 
 /**
  * 将登录用户信息更新或追加到 userinfo 数组中
@@ -27,13 +45,47 @@ function upsertUser(userinfo, loginUser, append) {
 }
 
 /**
- * 保存 userinfo 到 GitHub Secret，失败时降级为日志输出
+ * 将 userinfo JSON 原子化写入本地凭据文件（Docker 部署挂载卷）。
+ * 未配置 USERINFO_FILE 时不做任何事，返回 false。
+ * @param {string} userinfoJSON
+ * @returns {boolean} 是否写入成功
+ */
+function writeUserinfoFile(userinfoJSON) {
+  const file = process.env.USERINFO_FILE
+  if (!file) return false
+  const tmp = `${file}.tmp`
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    // 先写临时文件再改名，避免写入中途被读取到半截 JSON
+    fs.writeFileSync(tmp, userinfoJSON, 'utf8')
+    fs.renameSync(tmp, file)
+    return true
+  } catch (error) {
+    printRed(`写入 USERINFO 文件失败 (${file})`)
+    console.dir(sanitizeForLog({ message: error.message }), { depth: null })
+    try { fs.rmSync(tmp, { force: true }) } catch { /* 忽略清理失败 */ }
+    return false
+  }
+}
+
+/**
+ * 保存 userinfo 到 GitHub Secret，失败时降级为日志输出。
+ * Docker 部署时配置了 USERINFO_FILE，则优先写本地文件（不再依赖 PAT / Secret）。
  * @param {Array} userinfo - 用户信息数组
  */
 function saveUserinfo(userinfo) {
   if (!userinfo.length) return
 
   const userinfoJSON = JSON.stringify(userinfo)
+
+  // Docker 模式：凭据持久化到挂载卷文件
+  if (process.env.USERINFO_FILE) {
+    if (writeUserinfoFile(userinfoJSON)) {
+      printGreen(`USERINFO 已保存到 ${process.env.USERINFO_FILE}`)
+      return
+    }
+    // 写文件失败时继续走原有 Secret/日志流程
+  }
 
   if (hasSecretWriteToken()) {
     try {
@@ -64,4 +116,4 @@ function printUserinfoFallback(userinfoJSON) {
   }
 }
 
-export { upsertUser, saveUserinfo }
+export { upsertUser, saveUserinfo, writeUserinfoFile, parseUserinfoJson }

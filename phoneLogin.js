@@ -1,6 +1,6 @@
 import { printGreen, printRed, printYellow } from "./utils/colorOut.js";
 import { sanitizeForLog, summarizeResponse } from "./utils/safeLog.js";
-import { upsertUser, saveUserinfo } from "./utils/userinfo.js";
+import { upsertUser, saveUserinfo, parseUserinfoJson } from "./utils/userinfo.js";
 import { close_api, delay, send, startService, waitForApi } from "./utils/utils.js";
 
 async function login() {
@@ -9,7 +9,7 @@ async function login() {
   const code = process.env.CODE
   const USERINFO = process.env.USERINFO
   const APPEND_USER = process.env.APPEND_USER
-  const userinfo = (USERINFO && APPEND_USER == "是") ? JSON.parse(USERINFO) : []
+  const userinfo = (USERINFO && APPEND_USER == "是") ? (parseUserinfoJson(USERINFO) || []) : []
 
   // 不使用二维码登录并且没有手机号或验证码
   if (!phone || !code) {
@@ -25,7 +25,6 @@ async function login() {
   }
 
   try {
-    // 手机号登录请求
     const result = await send(`/login/cellphone?mobile=${phone}&code=${code}`, "GET", {})
     if (result.status === 1) {
       printGreen("登录成功！")
@@ -43,4 +42,4 @@ async function login() {
   }
 }
 
-login().then(() => process.exit(0)).catch(e => { console.error(e); process.exit(1) })
+login().then(() => { process.exitCode = 0 }).catch(e => { console.error(e); process.exitCode = 1 })

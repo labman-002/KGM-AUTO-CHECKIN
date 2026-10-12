@@ -1,0 +1,70 @@
+# kgcheckin —— 酷狗概念版自动签到（Docker 部署）
+#
+# 默认启动「WebUI + 定时调度」一体化容器：
+#   - 浏览器打开 http://localhost:3000 使用控制台（扫码登录 / 手机号登录 / 一键签到 / 账号管理）
+#   - 每天北京时间 01:10 自动签到（CRON_SCHEDULE 可改）
+#
+# 私密配置（通知渠道密钥、WebUI 密码等）写在 .env 文件中（已被 .gitignore 忽略），
+# 会自动替换下面 ${VAR} 形式的引用；参考 .env.example。
+#
+# 常用命令：
+#   docker compose up -d --build      构建并后台启动
+#   docker compose logs -f            查看日志
+#   docker compose down               停止
+#
+# 手动操作（一次性任务，跑完自动退出）：
+#   docker compose run --rm kgcheckin node scheduler.js once     立即签到一次（命令行方式）
+#   docker compose run --rm kgcheckin node qrcodeLogin.js gen    命令行生成登录二维码（扫 data/qr/login.html）
+#   docker compose run --rm kgcheckin node qrcodeLogin.js wait   命令行等待扫码并保存凭据
+#
+# 不需要 WebUI（仅定时调度，不映射端口）：
+#   将 command 改回 ["node", "scheduler.js"] 并删除 ports 即可。
+services:
+  kgcheckin:
+    build: .
+    image: kgcheckin:latest
+    container_name: kgcheckin
+    restart: unless-stopped
+    # WebUI + 内置定时调度一体化入口
+    command: node webui/server.js
+    ports:
+      - "3000:3000"                    # WebUI 控制台，按需改为 "8080:3000" 等
+    environment:
+      # ── WebUI ──
+      WEBUI_PORT: "3000"
+      WEBUI_PASSWORD: ${WEBUI_PASSWORD:-}   # 可选访问密码，在 .env 中设置；公网暴露时强烈建议启用
+      # ── 调度 ──
+      # 注意：签到的日期/星期计算与容器时区无关，统一按北京时间处理。
+      CRON_SCHEDULE: "10 1 * * *"      # 每天北京时间 01:10 签到
+      CRON_TIMEZONE: Asia/Shanghai     # 调度器使用的时区
+      RUN_ON_STARTUP: "false"          # true：容器启动后立即执行一次签到
+      # ── 凭据（二选一）──
+      # 方式一（推荐）：在 WebUI 里扫码/手机号登录，凭据自动保存到挂载卷 data/userinfo.json
+      # 方式二：直接贴入已有的 USERINFO（与 GitHub Actions 的 Secret 格式一致）
+      # USERINFO: '[{"userid":"123456","token":"xxxxxxxx"}]'
+      # ── 通知渠道（全部可选；在 .env 中填值即可启用，手动与定时签到都会推送）──
+      WECOM_BOT_KEY: ${WECOM_BOT_KEY:-}
+      DINGTALK_BOT_KEY: ${DINGTALK_BOT_KEY:-}
+      DINGTALK_SECRET: ${DINGTALK_SECRET:-}
+      FEISHU_BOT_KEY: ${FEISHU_BOT_KEY:-}
+      YUNHU_BOT_KEY: ${YUNHU_BOT_KEY:-}
+      SERVERCHAN_SENDKEY: ${SERVERCHAN_SENDKEY:-}
+      PUSHPLUS_TOKEN: ${PUSHPLUS_TOKEN:-}
+      PUSHPLUS_TOPIC: ${PUSHPLUS_TOPIC:-}
+      TG_BOT_TOKEN: ${TG_BOT_TOKEN:-}
+      TG_CHAT_ID: ${TG_CHAT_ID:-}
+      BARK_KEY: ${BARK_KEY:-}
+      BARK_GROUP: ${BARK_GROUP:-}
+      DISCORD_WEBHOOK: ${DISCORD_WEBHOOK:-}
+      MAIL_HOST: ${MAIL_HOST:-}
+      MAIL_PORT: ${MAIL_PORT:-}
+      MAIL_USER: ${MAIL_USER:-}
+      MAIL_PASS: ${MAIL_PASS:-}
+      MAIL_TO: ${MAIL_TO:-}
+      # ── 其他（一般无需修改）──
+      # PAT: ""                        # 仅当仍需把 token 刷新同步回 GitHub Secret 时才需要
+      # GITHUB_REPOSITORY: ""          # 同上，需与 PAT 配合使用
+      # WEBUI_API_PORT: "3010"         # 容器内登录用 API 服务端口
+      # CHECKIN_API_PORT: "3020"       # 容器内签到子进程 API 服务端口
+    volumes:
+      - ./data:/app/data               # 凭据 userinfo.json（token 周刷新自动写回）

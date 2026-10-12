@@ -1,4 +1,22 @@
 import { spawn } from 'child_process'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const apiDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../api')
+
+/**
+ * 本地 api 服务端口。
+ * 通过环境变量 API_PORT 覆盖（默认 3000），供 Docker WebUI 等场景
+ * 在同一容器内并行运行多个 api 服务实例（登录服务 / 签到子进程各用一个端口）。
+ * 注意需在调用时读取（而非模块加载时），调用方可能在导入后才设置该变量。
+ */
+function apiPort() {
+  return process.env.API_PORT || '3000'
+}
+
+function apiBase() {
+  return `http://127.0.0.1:${apiPort()}`
+}
 
 /** 延时 */
 function delay(ms) {
@@ -13,7 +31,7 @@ function delay(ms) {
  * @param {string} base 服务地址
  * @param {number} timeoutMs 最长等待毫秒
  */
-async function waitForApi(base = 'http://127.0.0.1:3000', timeoutMs = 20000) {
+async function waitForApi(base = apiBase(), timeoutMs = 20000) {
   const start = Date.now()
   while (Date.now() - start < timeoutMs) {
     try {
@@ -33,9 +51,15 @@ async function waitForApi(base = 'http://127.0.0.1:3000', timeoutMs = 20000) {
 
 /** 启动 api 服务（detached 使其成为独立进程组，便于整组强杀） */
 function startService() {
-  const api = spawn('npm', ['run', 'apiService'], {
+  // 直接以 node 运行 api/app.js（与 npm run apiService → node app.js 等价）：
+  // 1. 兼容 Windows：新版 Node 禁止无 shell 直接 spawn npm.cmd（EINVAL）；
+  // 2. 少一层 npm 中间进程，close_api 强杀更干净（npm 不向子进程转发信号）。
+  const api = spawn(process.execPath, ['app.js'], {
+    cwd: apiDir,
     detached: true,
     stdio: ['ignore', 'pipe', 'pipe'],
+    // api 服务监听端口与客户端 base 保持一致（api/server.js 读取 PORT）
+    env: { ...process.env, PORT: apiPort() },
   })
 
   api.stdout.on('data', () => {})
@@ -50,14 +74,14 @@ function startService() {
 
 /**
  * 关闭 api 服务。
- * 关键修复：npm 不会把 SIGTERM 转发给它的子进程（真正的 Express 服务），
- * 仅 api.kill() 会导致 3000 端口一直被占 → 下一阶段 startService 报 EADDRINUSE。
- * 因此用 detached 进程组 + process.kill(-pid) 强杀整组。
+ * detached 使 api 服务运行在独立进程组：
+ * - Linux（Actions/Docker）：process.kill(-pid, 'SIGKILL') 强杀整组；
+ * - Windows：进程组不可用，降级为 api.kill() 直接结束服务进程。
  */
 function close_api(api) {
   if (!api || !api.pid) return
   try {
-    process.kill(-api.pid, 'SIGKILL') // 杀掉整个进程组（npm + Express）
+    process.kill(-api.pid, 'SIGKILL') // 杀掉整个进程组（Linux/macOS）
   } catch (e) {
     try { api.kill('SIGKILL') } catch (_) { /* 已退出 */ }
   }
@@ -76,7 +100,7 @@ async function send(path, method, headers) {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), TIMEOUT_MS)
     try {
-      const resp = await fetch('http://127.0.0.1:3000' + path, {
+      const resp = await fetch(apiBase() + path, {
         method,
         headers,
         signal: controller.signal,
